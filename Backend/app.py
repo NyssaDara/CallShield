@@ -14,6 +14,10 @@ app = Flask(__name__)
 
 def get_connection():
 
+    print("DB HOST:", os.getenv("DB_HOST"))
+    print("DB PORT:", os.getenv("DB_PORT"))
+    print("DB NAME:", os.getenv("DB_NAME"))
+
     return mysql.connector.connect(
         host=os.getenv("DB_HOST"),
         port=int(os.getenv("DB_PORT", "3306")),
@@ -59,7 +63,6 @@ def check():
     phone = request.args.get("phone")
 
     if not phone:
-
         return jsonify({
             "error": "phone parameter is required"
         }), 400
@@ -67,7 +70,6 @@ def check():
     result = check_phone(phone)
 
     if result:
-
         return jsonify(result)
 
     return jsonify({
@@ -85,13 +87,11 @@ def action():
     data = request.json
 
     if not data:
-
         return jsonify({
             "error": "JSON body required"
         }), 400
 
     if "phone" not in data or "action" not in data:
-
         return jsonify({
             "error": "phone and action are required"
         }), 400
@@ -100,15 +100,12 @@ def action():
     action = data["action"]
 
     valid_columns = {
-
         "block": "Blocked_count",
         "report": "Reported_count",
         "help": "Help_count"
-
     }
 
     if action not in valid_columns:
-
         return jsonify({
             "error": "Invalid action"
         }), 400
@@ -155,7 +152,6 @@ def analyze():
     audio_file = request.files.get("audio")
 
     if not audio_file:
-
         return jsonify({
             "error": "audio file is required"
         }), 400
@@ -165,10 +161,8 @@ def analyze():
     risk = detection(transcript)
 
     return jsonify({
-
         "transcript": transcript,
         "risk": risk
-
     })
 
 
@@ -178,7 +172,9 @@ def analyze():
 
 if __name__ == "__main__":
 
+    port = int(os.environ.get("PORT", 5000))
+
     app.run(
         host="0.0.0.0",
-        port=5000
+        port=port
     )
