@@ -10,40 +10,51 @@ class CallReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
 
-        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+        val state =
+            intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+
         val number =
             intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
 
-        // Incoming call
-        if (
-            state == TelephonyManager.EXTRA_STATE_RINGING &&
-            !number.isNullOrEmpty()
-        ) {
+        // EVERY INCOMING CALL
+        if (state == TelephonyManager.EXTRA_STATE_RINGING) {
 
-            ApiClient.checkPhone(number) { isFlagged, reportedCount ->
+            val overlayIntent =
+                Intent(context, ScamOverlayService::class.java).apply {
 
-                if (isFlagged) {
+                    putExtra(
+                        "PHONE_NUMBER",
+                        number
+                    )
 
-                    val overlayIntent =
-                        Intent(context, ScamOverlayService::class.java).apply {
-                            putExtra("PHONE_NUMBER", number)
-                            putExtra("REPORTED_COUNT", reportedCount)
-                        }
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        context.startForegroundService(overlayIntent)
-                    } else {
-                        context.startService(overlayIntent)
-                    }
+                    putExtra(
+                        "REPORTED_COUNT",
+                        0
+                    )
                 }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                context.startForegroundService(
+                    overlayIntent
+                )
+
+            } else {
+
+                context.startService(
+                    overlayIntent
+                )
             }
         }
 
-        // Call ended
+        // CALL ENDED
         if (state == TelephonyManager.EXTRA_STATE_IDLE) {
 
             context.stopService(
-                Intent(context, ScamOverlayService::class.java)
+                Intent(
+                    context,
+                    ScamOverlayService::class.java
+                )
             )
         }
     }
