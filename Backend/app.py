@@ -1,11 +1,16 @@
+
 from flask import Flask, request, jsonify
 import mysql.connector
 import os
+import tempfile
 
 from transcribe import text
 from detect import detection
 
 app = Flask(__name__)
+
+# Maximum audio upload size: 25 MB
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 
 # =========================
@@ -13,11 +18,6 @@ app = Flask(__name__)
 # =========================
 
 def get_connection():
-
-    print("DB HOST:", os.getenv("DB_HOST"))
-    print("DB PORT:", os.getenv("DB_PORT"))
-    print("DB NAME:", os.getenv("DB_NAME"))
-
     return mysql.connector.connect(
         host=os.getenv("DB_HOST"),
         port=int(os.getenv("DB_PORT", "3306")),
@@ -32,49 +32,63 @@ def get_connection():
 # =========================
 
 def check_phone(phone):
-
     connection = get_connection()
-    cursor = connection.cursor(dictionary=True)
 
-    cursor.execute(
-        """
-        SELECT
-            Phn_no,
-            Blocked_count,
-            Reported_count,
-            Help_count
-        FROM data
-        WHERE Phn_no = %s
-        """,
-        (phone,)
-    )
+    try:
+        cursor = connection.cursor(dictionary=True)
 
-    result = cursor.fetchone()
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    Phn_no,
+                    Blocked_count,
+                    Reported_count,
+                    Help_count
+                FROM data
+                WHERE Phn_no = %s
+                """,
+                (phone,)
+            )
 
-    cursor.close()
-    connection.close()
+            return cursor.fetchone()
 
-    return result
+        finally:
+            cursor.close()
+
+    finally:
+        connection.close()
 
 
 @app.route("/check", methods=["GET"])
 def check():
-
-    phone = request.args.get("phone")
+    phone = request.args.get("phone", "").strip()
 
     if not phone:
         return jsonify({
             "error": "phone parameter is required"
         }), 400
 
-    result = check_phone(phone)
+    try:
+        result = check_phone(phone)
 
-    if result:
-        return jsonify(result)
+        if result:
+            return jsonify(result)
 
-    return jsonify({
-        "message": "not found"
-    })
+        return jsonify({
+            "message": "not found",
+            "phone": phone,
+            "Reported_count": 0,
+            "Blocked_count": 0,
+            "Help_count": 0
+        }), 200
+
+    except Exception:
+        app.logger.exception("Phone check failed")
+
+        return jsonify({
+            "error": "Unable to check phone number"
+        }), 500
 
 
 # =========================
@@ -83,21 +97,20 @@ def check():
 
 @app.route("/action", methods=["POST"])
 def action():
-
-    data = request.json
+    data = request.get_json(silent=True)
 
     if not data:
         return jsonify({
             "error": "JSON body required"
         }), 400
 
-    if "phone" not in data or "action" not in data:
+    phone = str(data.get("phone", "")).strip()
+    action_name = data.get("action")
+
+    if not phone or not action_name:
         return jsonify({
             "error": "phone and action are required"
         }), 400
-
-    phone = data["phone"]
-    action = data["action"]
 
     valid_columns = {
         "block": "Blocked_count",
@@ -105,25 +118,24 @@ def action():
         "help": "Help_count"
     }
 
-    if action not in valid_columns:
+    if action_name not in valid_columns:
         return jsonify({
             "error": "Invalid action"
         }), 400
 
-    column = valid_columns[action]
+    column = valid_columns[action_name]
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    connection = None
+    cursor = None
 
     try:
+        connection = get_connection()
+        cursor = connection.cursor()
 
         cursor.execute(
             f"""
-            INSERT INTO data
-                (Phn_no, {column})
-            VALUES
-                (%s, 1)
-
+            INSERT INTO data (Phn_no, {column})
+            VALUES (%s, 1)
             ON DUPLICATE KEY UPDATE
                 {column} = {column} + 1
             """,
@@ -132,14 +144,28 @@ def action():
 
         connection.commit()
 
+        return jsonify({
+            "status": "ok",
+            "phone": phone,
+            "action": action_name
+        }), 200
+
+    except Exception:
+        if connection:
+            connection.rollback()
+
+        app.logger.exception("User action failed")
+
+        return jsonify({
+            "error": "Unable to save user action"
+        }), 500
+
     finally:
+        if cursor:
+            cursor.close()
 
-        cursor.close()
-        connection.close()
-
-    return jsonify({
-        "status": "ok"
-    })
+        if connection:
+            connection.close()
 
 
 # =========================
@@ -148,22 +174,81 @@ def action():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-
     audio_file = request.files.get("audio")
 
-    if not audio_file:
+    if not audio_file or not audio_file.filename:
         return jsonify({
-            "error": "audio file is required"
+            "error": "Please upload an audio file using the 'audio' field"
         }), 400
 
-    transcript = text(audio_file)
+    temp_path = None
 
-    risk = detection(transcript)
+    try:
+        # Save the uploaded audio to a temporary file.
+        # This avoids using the same temp filename for concurrent requests.
+        suffix = os.path.splitext(audio_file.filename)[1] or ".wav"
 
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            delete=False
+        ) as temp_file:
+            temp_path = temp_file.name
+            audio_file.save(temp_path)
+
+        # Transcribe the audio.
+        # transcribe.py must accept a file path for this version.
+        transcript = text(temp_path)
+
+        if not transcript or not transcript.strip():
+            return jsonify({
+                "error": "No speech could be transcribed. Try a clearer recording."
+            }), 422
+
+        # Analyze the transcript.
+        risk = detection(transcript)
+
+        return jsonify({
+            "transcript": transcript,
+            "risk": risk
+        }), 200
+
+    except Exception:
+        app.logger.exception("Audio analysis failed")
+
+        return jsonify({
+            "error": "Audio analysis failed. Please check the audio format and backend logs."
+        }), 500
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                app.logger.warning("Could not remove temporary audio file")
+
+
+# =========================
+# UPLOAD ERROR HANDLER
+# =========================
+
+@app.errorhandler(413)
+def file_too_large(error):
     return jsonify({
-        "transcript": transcript,
-        "risk": risk
-    })
+        "error": "Audio file is too large. Maximum size is 25 MB."
+    }), 413
+
+
+# =========================
+# HEALTH CHECK
+# =========================
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "app": "CallShield API",
+        "status": "running",
+        "endpoints": ["/check", "/action", "/analyze"]
+    }), 200
 
 
 # =========================
@@ -171,10 +256,10 @@ def analyze():
 # =========================
 
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 5000))
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False
     )

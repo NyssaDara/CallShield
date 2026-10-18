@@ -1,16 +1,19 @@
+
 from faster_whisper import WhisperModel
 
-model = WhisperModel("tiny", device="cpu", compute_type="int8")
+model = WhisperModel(
+    "tiny",
+    device="cpu",
+    compute_type="int8"
+)
 
-def text(audio_file):
-    audio_path = "temp_audio.wav"
-    audio_file.save(audio_path)
 
+def text(audio_path):
     segments, info = model.transcribe(audio_path)
 
-    transcript = ""
+    transcript = " ".join(
+        segment.text.strip()
+        for segment in segments
+    ).strip()
 
-    for segment in segments:
-        transcript += segment.text + " "
-
-    return transcript.strip()
+    return transcript
